@@ -37,9 +37,11 @@ class Gmail:
 		)
 		handler.setFormatter(formatter)
 		self.logger.addHandler(handler)
+		self.logger.info("Initialized Gmail object :)")
 
 		# Configure credentials
-		self.get_credentials()
+		self.creds = self.get_credentials()
+		self.logger.info("[✓] Gmail credentials configured successfully")
 
 
 	def get_credentials(self):
@@ -51,7 +53,7 @@ class Gmail:
 		token_path = os.path.join(root_dir, "token.json")
 		credential_path = os.path.join(root_dir, "credentials.json")
 
-		# STEP 1: Load token.json if it exists
+		# Load token.json if it exists
 		if os.path.exists(token_path):
 			try:
 				creds = Credentials.from_authorized_user_file('token.json', SCOPES)
@@ -60,9 +62,10 @@ class Gmail:
 				creds = None
 				self.logger.error(f"[!] Failed to parse token.json: {e}")
 
-		# STEP 2: If there are no (valid) credentials available, let the user log in.
+		# If there are no (valid) credentials available
 		if not creds or not creds.valid:
 			if creds and creds.expired and creds.refresh_token:
+				# If the credentials is valid but expired, try to refresh the credentials.
 				try:
 					creds.refresh(Request())
 					self.logger.info("[↻] Refreshed expired token.")
@@ -70,18 +73,21 @@ class Gmail:
 					creds = None
 					self.logger.error(f"[!] Failed to refresh token: {e}")
 			else:
-				# STEP 3: Trigger manual login flow
+				# We have to recreate creds, trigger manual login flow
 				flow = InstalledAppFlow.from_client_secrets_file(
 					credential_path, SCOPES
 				)
 				creds = flow.run_local_server(port=0)
 				self.logger.info("[✓] Login successful.")
 
-			# STEP 4: Save credentials
+			# Save our credentials
 			if creds:
 				with open(token_path, "w") as token:
 					token.write(creds.to_json())
 				self.logger.info("[✓] Saved new token.json")
+				return creds
+		
+		return creds
 
 if __name__ == "__main__":
 	obj = Gmail()

@@ -15,3 +15,6 @@ gmail_bot*.log
 # Confidential files
 credentials.json
 token.json
+
+# DS_Store
+.DS_Store
