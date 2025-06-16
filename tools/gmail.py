@@ -16,7 +16,7 @@ from queue import PriorityQueue
 
 from tools.logger import PrettyFormatter
 
-# If modifying these scopes, delete the file token.json.
+# If modifying these scopes, delete the file gmail_token.json.
 SCOPES = [
 	"https://www.googleapis.com/auth/gmail.readonly",
 	"https://www.googleapis.com/auth/gmail.modify",
@@ -54,7 +54,6 @@ class Gmail:
 		self.logger.info("---------- Initialized logger object, script is running :) ----------")
 
 		# Configure credentials
-		service = self.get_service()
 		self.logger.info("[✓] Gmail credentials configured successfully")
 
 		# Configure username (email) and valid inboxes
@@ -73,17 +72,17 @@ class Gmail:
 		"""
 		creds = None
 		root_dir = os.path.join(os.getcwd(), "tools")
-		token_path = os.path.join(root_dir, "token.json")
+		token_path = os.path.join(root_dir, "gmail_token.json")
 		credential_path = os.path.join(root_dir, "credentials.json")
 
-		# Load token.json if it exists
+		# Load gmail_token.json if it exists
 		if os.path.exists(token_path):
 			try:
 				creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-				self.logger.info("[✓] Loaded token.json")
+				self.logger.info("[✓] Loaded gmail_token.json")
 			except Exception as e:
 				creds = None
-				self.logger.error(f"[!] Failed to parse token.json: {e}")
+				self.logger.error(f"[!] Failed to parse gmail_token.json: {e}")
 
 		# If there are no (valid) credentials available
 		if not creds or not creds.valid:
@@ -107,7 +106,7 @@ class Gmail:
 			if creds:
 				with open(token_path, "w") as token:
 					token.write(creds.to_json())
-				self.logger.info("[✓] Saved new token.json")
+				self.logger.info("[✓] Saved new gmail_token.json")
 		try:
 			return build("gmail", "v1", credentials=creds)
 		except HttpError as error:
@@ -307,7 +306,7 @@ class Gmail:
 		return False
 
 	def check_email_queue(self):
-		return not self.email_queue.qsize() == 0
+		return self.email_queue.qsize() != 0
 
 	def print_email_queue(self) -> None:
 		temp = copy.deepcopy(self.email_queue.queue)
@@ -318,7 +317,9 @@ class Gmail:
 		print(return_str)
 
 	def get_next_email(self):
-		return self.email_queue.get()[1]
+		if self.check_email_queue:
+			return self.email_queue.get()[1]
+		return None
 
 if __name__ == "__main__":
 	obj = Gmail()

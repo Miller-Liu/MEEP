@@ -4,6 +4,7 @@ __pycache__/
 # Logs:
 gmail_bot*.log
 MEEP_bot*.log
+notion_bot*.log
 
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
@@ -15,7 +16,8 @@ MEEP_bot*.log
 
 # Confidential files
 credentials.json
-token.json
+gmail_token.json
+notion_api.json
 
 # DS_Store
 .DS_Store
