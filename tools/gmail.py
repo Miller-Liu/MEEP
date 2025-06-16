@@ -48,16 +48,13 @@ class Gmail:
 		)
 
 		# Configure formatter for writing to log files
-		formatter = PrettyFormatter(
-			f"[{'%(asctime)s':^22}] [{'%(levelname)s':^12s}] [{'%(filename)s:%(lineno)d':^}]: %(message)s", # log format
-			datefmt='%Y-%m-%d %I:%M:%S %p'	# date log format
-		)
+		formatter = PrettyFormatter(datefmt='%Y-%m-%d %I:%M:%S %p')	# date log format
 		handler.setFormatter(formatter)
 		self.logger.addHandler(handler)
 		self.logger.info("---------- Initialized logger object, script is running :) ----------")
 
 		# Configure credentials
-		self.service = self.get_service()
+		service = self.get_service()
 		self.logger.info("[✓] Gmail credentials configured successfully")
 
 		# Configure username (email) and valid inboxes
@@ -75,7 +72,7 @@ class Gmail:
 		Set up and return credentials 
 		"""
 		creds = None
-		root_dir = os.path.join(os.getcwd(), "gmail")
+		root_dir = os.path.join(os.getcwd(), "tools")
 		token_path = os.path.join(root_dir, "token.json")
 		credential_path = os.path.join(root_dir, "credentials.json")
 
@@ -119,16 +116,18 @@ class Gmail:
 		return None
 
 	def get_email(self):
-		if self.service:
+		service = self.get_service()
+		if service:
 			# Get the profile info
-			profile = self.service.users().getProfile(userId='me').execute()
+			profile = service.users().getProfile(userId='me').execute()
 			return profile['emailAddress']
 		self.logger.error("[!] No service object")
 		return None
 
 	def get_inboxes(self):
-		if self.service:
-			results = self.service.users().labels().list(userId="me").execute()
+		service = self.get_service()
+		if service:
+			results = service.users().labels().list(userId="me").execute()
 			labels = results.get("labels", [])
 
 			if not labels:
@@ -154,7 +153,8 @@ class Gmail:
 		Print the returned  message id
 		Returns: Message object, including message id
 		"""
-		if self.service:
+		service = self.get_service()
+		if service:
 			message = EmailMessage()
 
 			message.set_content(content)
@@ -167,13 +167,14 @@ class Gmail:
 			encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
 			create_message = {"raw": encoded_message}
-			send_message = self.service.users().messages().send(userId="me", body=create_message).execute()
+			send_message = service.users().messages().send(userId="me", body=create_message).execute()
 			self.logger.info(f"[✓] Sent email with id: {send_message['id']}")
 		else:
 			self.logger.error("[!] No service object")
 	
 	def reply_message(self, email, content: str):
-		if self.service and self.inboxes:
+		service = self.get_service()
+		if service and self.inboxes:
 			message = EmailMessage()
 			message.set_content(content)
 			message["To"] = email["sender"]
@@ -185,11 +186,11 @@ class Gmail:
 			encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
 
 			create_message = {"raw": encoded_message, "threadId": email["thread_id"]}
-			send_message = self.service.users().messages().send(userId="me", body=create_message).execute()
+			send_message = service.users().messages().send(userId="me", body=create_message).execute()
 			self.logger.info(f"[✓] Replied to email with id: {send_message['id']}")
 
 			# Relabel email from MEEP Seen to MEEP Processed
-			self.service.users().messages().modify(
+			service.users().messages().modify(
 				userId='me',
 				id=email['gmail_msg_id'],
 				body={
@@ -207,9 +208,10 @@ class Gmail:
 	# 	UNREAD: Add emails to queue and relabel emails to MEEP Seen
 	# 	MEEP Seeen: Add email to queue
 	def process_inbox_emails(self, inbox) -> None:
+		service = self.get_service()
 		# service obj exists and unread is in inboxes
-		if self.service and self.inboxes and inbox in self.inboxes.keys() and inbox in ["UNREAD", "MEEP Seen"]:
-			results = self.service.users().messages().list(userId='me', labelIds=[self.inboxes[inbox]]).execute()
+		if service and self.inboxes and inbox in self.inboxes.keys() and inbox in ["UNREAD", "MEEP Seen"]:
+			results = service.users().messages().list(userId='me', labelIds=[self.inboxes[inbox]]).execute()
 			messages = results.get('messages', [])
 
 			if not messages:
@@ -219,7 +221,7 @@ class Gmail:
 				for msg in messages:
 					# For each unread email, get the relevant fields
 					gmail_msg_id = msg['id']
-					msg_data = self.service.users().messages().get(userId='me', id=gmail_msg_id, format='full').execute()
+					msg_data = service.users().messages().get(userId='me', id=gmail_msg_id, format='full').execute()
 					headers = msg_data['payload']['headers']
 					label_ids = msg_data.get('labelIds', [])
 					subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
@@ -273,7 +275,7 @@ class Gmail:
 								# relabel unread emails 
 								if inbox == "UNREAD":
 									# potentially add try except here?
-									self.service.users().messages().modify(
+									service.users().messages().modify(
 										userId='me',
 										id=gmail_msg_id,
 										body={
@@ -290,6 +292,23 @@ class Gmail:
 		else:
 			self.logger.error("[!] Missing service or the specified inbox does not exist")
 
+	# check if specified inbox is empty
+	def check_inbox(self, inbox) -> bool:
+		service = self.get_service()
+		# service obj exists and inbox is valid
+		if service and self.inboxes and inbox in self.inboxes.keys():
+			results = service.users().messages().list(userId='me', labelIds=[self.inboxes[inbox]]).execute()
+			messages = results.get('messages', [])
+			if not messages:
+				return False
+			else:
+				return True
+		self.logger.error("[!] No valid inbox found")
+		return False
+
+	def check_email_queue(self):
+		return not self.email_queue.qsize() == 0
+
 	def print_email_queue(self) -> None:
 		temp = copy.deepcopy(self.email_queue.queue)
 		ordered = [heapq.heappop(temp)[1] for _ in range(len(temp))]
@@ -303,7 +322,8 @@ class Gmail:
 
 if __name__ == "__main__":
 	obj = Gmail()
-	obj.print_email_queue()
-	obj.reply_message(obj.get_next_email(), "MEEP: testing if relabel works")
-	obj.print_email_queue()
+	# obj.print_email_queue()
+	# obj.process_inbox_emails("UNREAD")
+	# obj.reply_message(obj.get_next_email(), "MEEP: testing if relabel works")
+	# obj.print_email_queue()
 	
