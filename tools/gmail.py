@@ -13,6 +13,7 @@ import re
 import heapq
 import copy
 from queue import PriorityQueue
+from typing import Callable
 
 from tools.logger import PrettyFormatter
 
@@ -62,8 +63,10 @@ class Gmail:
 		self.inboxes = self.get_inboxes()
 		self.logger.info("[✓] Registered email inboxes: " + str(self.inboxes))
 
-		# Configure the email queue
-		self.email_queue = PriorityQueue()
+		self.last_chat = (0, None)
+
+		# Configure the command queue
+		self.command_queue = PriorityQueue()
 		self.process_inbox_emails("MEEP Seen")
 
 	def get_service(self):
@@ -133,9 +136,9 @@ class Gmail:
 				self.logger.error("[!] No inbox labels found.")
 				return {}
 			
-			# We only care about: UNREAD, MEEP Seen, and MEEP Processed (maybe INBOX, SENT, and IMPORTANT)
+			# We only care about: UNREAD, MEEP Seen, MEEP Ignored, MEEP Chat and MEEP Command (maybe INBOX, SENT, and IMPORTANT)
 			inboxes = {}
-			required_inboxes = ["UNREAD", "MEEP Seen", "MEEP Processed"]
+			required_inboxes = ["UNREAD", "MEEP Seen", "MEEP Ignored", "MEEP Chat", "MEEP Command"]
 			for label in labels:
 				if label["name"] in required_inboxes:
 					inboxes[label["name"]] = label['id']
@@ -171,7 +174,7 @@ class Gmail:
 		else:
 			self.logger.error("[!] No service object")
 	
-	def reply_message(self, email, content: str):
+	def reply_message(self, email, content: str, label: str):
 		service = self.get_service()
 		if service and self.inboxes:
 			message = EmailMessage()
@@ -188,35 +191,32 @@ class Gmail:
 			send_message = service.users().messages().send(userId="me", body=create_message).execute()
 			self.logger.info(f"[✓] Replied to email with id: {send_message['id']}")
 
-			# Relabel email from MEEP Seen to MEEP Processed
+			# Relabel email from MEEP Seen to specified inbox (label)
 			service.users().messages().modify(
 				userId='me',
 				id=email['gmail_msg_id'],
 				body={
-					"addLabelIds": self.inboxes["MEEP Processed"],
+					"addLabelIds": self.inboxes[label],
 					"removeLabelIds": self.inboxes["MEEP Seen"]
 				}
 			).execute()
 			self.logger.info(f"[✓] Relabeled to email with with id: {send_message['id']}")
 
-			self.logger.info(f"[✓] {self.email_queue.qsize()} emails in the queue")
+			self.logger.info(f"[✓] {self.command_queue.qsize()} emails in the queue")
 		else:
 			self.logger.error("[!] No service object")
 
-	# process emails from a given inbox
-	# 	UNREAD: Add emails to queue and relabel emails to MEEP Seen
-	# 	MEEP Seeen: Add email to queue
-	def process_inbox_emails(self, inbox) -> None:
+	def process_inbox_emails(self, inbox, is_command : Callable = lambda _: False) -> None:
 		service = self.get_service()
-		# service obj exists and unread is in inboxes
+		# service obj exists, and inbox is a valid inbox
 		if service and self.inboxes and inbox in self.inboxes.keys() and inbox in ["UNREAD", "MEEP Seen"]:
 			results = service.users().messages().list(userId='me', labelIds=[self.inboxes[inbox]]).execute()
 			messages = results.get('messages', [])
 
 			if not messages:
-				self.logger.info("[✓] No unread messages")
+				self.logger.info(f"[✓] No messages in {inbox}")
 			else:
-				self.logger.info(f"[✓] Got {len(messages)} unread message(s)")
+				self.logger.info(f"[✓] Got {len(messages)} message(s)")
 				for msg in messages:
 					# For each unread email, get the relevant fields
 					gmail_msg_id = msg['id']
@@ -229,10 +229,11 @@ class Gmail:
 					timestamp_ms = int(msg_data['internalDate'])
 					thread_id = msg_data['threadId']
 					
-					if not (sender and msg_id):
+					if not (sender and msg_id): # If there is no sending or no message id
 						self.logger.error("[!] Missing sender or Message-ID")
-					elif self.email and re.search(self.email, sender):
+					elif self.email and re.search(self.email, sender): # If this is a reply from MEEP
 						self.logger.warning("[!] Sender is MEEP, skipping this email")
+						# TODO: maybe add a thing relabeling this email to ignored
 					else:
 						# Get body of email
 						payload = msg_data['payload']
@@ -250,7 +251,7 @@ class Gmail:
 									
 									# We are using google voice so the content is sandwiched between elements linked to voice.google.com
 									for chunk in body.split("\n"):
-										if re.search("<https:\/\/voice\.google\.com.*>", chunk): # type: ignore
+										if re.search("<https:\/\/voice\.google\.com.*>", chunk) or re.search("To respond to this text message, reply to this email or visit Google Voice.", chunk): # type: ignore
 											status += 1
 											if status >= 2:
 												break
@@ -268,10 +269,8 @@ class Gmail:
 									"content": content,
 									"gmail_msg_id": gmail_msg_id
 								}
-								self.email_queue.put((timestamp_ms, email_obj))
-								self.logger.info(f"[✓] The email from \"{sender}\" about \"{subject}\" is added to the queue")
 
-								# relabel unread emails 
+								# If reading from unread, relabel to seen
 								if inbox == "UNREAD":
 									# potentially add try except here?
 									service.users().messages().modify(
@@ -282,12 +281,41 @@ class Gmail:
 											"removeLabelIds": self.inboxes["UNREAD"]
 										}
 									).execute()
-									self.logger.info(f"[✓] The email with subject {subject} has been relabeled from UNREAD to MEEP Seen")
+									
+								if is_command(content):
+									# message is a command, add to queue and relabel
+									self.command_queue.put((timestamp_ms, email_obj))
+									self.logger.info(f"[✓] The email from \"{content}\" is added to the queue")
+								else:
+									# message is a chat message, replace the last message
+									if timestamp_ms >= self.last_chat[0]:
+										if self.last_chat[1]:
+											service.users().messages().modify(
+												userId='me',
+												id=self.last_chat[1]["gmail_msg_id"],
+												body={
+													"addLabelIds": self.inboxes["MEEP Ignored"],
+													"removeLabelIds": self.last_chat[1]["label_ids"]
+												}
+											).execute()
+											self.logger.info(f"[✓] Ignored email about \"{self.last_chat[1]['content']}\"")
+										self.last_chat = (timestamp_ms, email_obj)
+										self.logger.info(f"[✓] The email about \"{content}\" is the current email")
+									else:
+										service.users().messages().modify(
+											userId='me',
+											id=gmail_msg_id,
+											body={
+												"addLabelIds": self.inboxes["MEEP Ignored"],
+												"removeLabelIds": label_ids
+											}
+										).execute()
+										self.logger.info(f"[✓] Ignored email about \"{content}\"")
 							else:
 								self.logger.error("[!] Missing content in message payload")
 						else:
 							self.logger.error("[!] Missing parts in message payload")
-				self.logger.info(f"[✓] {self.email_queue.qsize()} emails in the queue")
+				self.logger.info(f"[✓] {self.command_queue.qsize()} emails in the queue")
 		else:
 			self.logger.error("[!] Missing service or the specified inbox does not exist")
 
@@ -305,26 +333,35 @@ class Gmail:
 		self.logger.error("[!] No valid inbox found")
 		return False
 
-	def check_email_queue(self):
-		return self.email_queue.qsize() != 0
+	def check_command_queue(self):
+		return self.command_queue.qsize() != 0
 
-	def print_email_queue(self) -> None:
-		temp = copy.deepcopy(self.email_queue.queue)
+	def print_command_queue(self) -> None:
+		temp = copy.deepcopy(self.command_queue.queue)
 		ordered = [heapq.heappop(temp)[1] for _ in range(len(temp))]
 		return_str = ""
 		for item in ordered:
-			return_str += f"Subject: {item['subject']}\nFrom: {item['sender']}\nContent: {item['content']}\n\n"
+			return_str += f"Content: {item['content']}\n\n"
 		print(return_str)
 
-	def get_next_email(self):
-		if self.check_email_queue:
-			return self.email_queue.get()[1]
+	def get_next_command(self):
+		if self.check_command_queue:
+			return self.command_queue.get()[1]
 		return None
+	
+	def check_chat(self):
+		return self.last_chat[1] != None
+	
+	def get_next_chat(self):
+		next_chat = self.last_chat[1]
+		self.last_chat = (self.last_chat[0], None)
+		return next_chat
 
 if __name__ == "__main__":
 	obj = Gmail()
-	# obj.print_email_queue()
 	# obj.process_inbox_emails("UNREAD")
+	# obj.print_command_queue()
+	# print(obj.get_next_chat()[1]["content"]) # type: ignore
 	# obj.reply_message(obj.get_next_email(), "MEEP: testing if relabel works")
 	# obj.print_email_queue()
 	

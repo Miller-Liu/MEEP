@@ -6,9 +6,23 @@ from logger import PrettyFormatter
 from notion_client import AsyncClient
 import asyncio
 
-class Filter:
-    def __init__(self) -> None:
-        pass
+class Database:
+    def __init__(self, json_data : dict, logger : logging.Logger) -> None:
+        self.logger = logger
+        if "object" in json_data.keys() and json_data["object"] == "database":
+            try:
+                self.id = json_data["id"]
+                self.name = json_data["title"][0]["plain_text"]
+            except Exception as e:
+                self.logger.error(f"[!] Failed with error: {e}")
+        else:
+            self.logger.error("[!] Not a database object")
+
+    def __str__(self) -> str:
+        return f"Database Name: {self.name}\nID: {self.id}"
+    
+    def __repr__(self) -> str:
+        return f"\n{'-'*35}\n{str(self)}\n{'-'*35}"
 
 class Notion:
     def __init__(self) -> None:
@@ -32,6 +46,13 @@ class Notion:
         self.logger.addHandler(handler)
         self.logger.info("---------- Initialized logger object, script is running :) ----------")
 
+    @classmethod
+    async def create(cls):
+        notion_obj = cls()
+        await notion_obj.get_all_databases()
+        print(notion_obj.databases)
+        return notion_obj
+
     async def get_client(self):
         """
         Set up and return client 
@@ -52,9 +73,9 @@ class Notion:
         self.logger.error(f"[!] notion_api.json is an invalid path")
         return None
     
-    async def get_all_pages(self):
+    async def get_all_databases(self):
         client = await self.get_client()
-        pages = []
+        databases = []
         next_cursor = None
 
         if not client:
@@ -66,19 +87,17 @@ class Notion:
                 filter={"property": "object", "value": "database"},
                 start_cursor=next_cursor
             )
-            pages.extend(response["results"])
+            databases.append(Database(response["results"][0], self.logger))
             next_cursor = response.get("next_cursor")
             if not response.get("has_more"):
                 break
 
-        return pages
+        self.databases = databases
 
 
 
 async def main():
-    obj = Notion()
-    pages = await obj.get_all_pages()
-    print(pages)
+    obj = await Notion.create()
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -35,6 +35,9 @@ logger.info("---------- Initialized logger object, script is running :) --------
 # Configure gmail service
 gmail_client = Gmail()
 
+def is_command(x : str):
+    return x[:9].lower() == "command: "
+
 async def idle_mode():
     logger.info("[MODE] Switched to IDLE")
     loop = asyncio.get_running_loop()
@@ -54,7 +57,7 @@ async def active_mode():
             has_new = await loop.run_in_executor(None, gmail_client.check_inbox, "UNREAD")
             if has_new:
                 logger.info(f"[Active]: Fetching new messages")
-                await loop.run_in_executor(None, gmail_client.process_inbox_emails, "UNREAD")
+                await loop.run_in_executor(None, gmail_client.process_inbox_emails, "UNREAD", is_command)
                 last_activity = time.time()
             if time.time() - last_activity > 1 * 60:
                 return "IDLE"
@@ -64,11 +67,17 @@ async def active_mode():
         nonlocal last_activity
         loop = asyncio.get_running_loop()
         while True:
-            has_next = await loop.run_in_executor(None, gmail_client.check_email_queue)
-            if has_next:
-                logger.info(f"[Active]: Processing next message")
-                email = await loop.run_in_executor(None, gmail_client.get_next_email)
-                await loop.run_in_executor(None, gmail_client.reply_message, email, "seen this message")
+            has_command = await loop.run_in_executor(None, gmail_client.check_command_queue)
+            has_chat = await loop.run_in_executor(None, gmail_client.check_chat)
+            if has_command:
+                logger.info(f"[Active]: Processing next command")
+                email = await loop.run_in_executor(None, gmail_client.get_next_command)
+                await loop.run_in_executor(None, gmail_client.reply_message, email, "Processed command", "MEEP Command")
+                last_activity = time.time()
+            if has_chat:
+                logger.info(f"[Active]: Processing next command")
+                email = await loop.run_in_executor(None, gmail_client.get_next_chat)
+                await loop.run_in_executor(None, gmail_client.reply_message, email, "Saw Chat", "MEEP Chat")
                 last_activity = time.time()
             if time.time() - last_activity > 1 * 60:
                 return "IDLE"
