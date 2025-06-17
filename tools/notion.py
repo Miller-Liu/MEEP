@@ -70,6 +70,7 @@ class Notion:
                     return client
                 except Exception as e:
                     self.logger.error(f"[!] Failed to parse notion_api.json: {e}")
+                    return None
         self.logger.error(f"[!] notion_api.json is an invalid path")
         return None
     
@@ -93,6 +94,9 @@ class Notion:
                 break
 
         self.databases = databases
+
+    async def create_page_in_database(self):
+        pass
 
 
 
