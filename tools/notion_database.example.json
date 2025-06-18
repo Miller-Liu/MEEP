@@ -1,0 +1,6 @@
+{ 
+    "exact database name": {
+        "required": ["property name 1", "property name 2"],
+        "optional": {"optional property name 1": "default property value or null"}
+    }
+}

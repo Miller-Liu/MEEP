@@ -18,6 +18,7 @@ notion_bot*.log
 credentials.json
 gmail_token.json
 notion_api.json
+notion_config.json
 
 # DS_Store
 .DS_Store
