@@ -72,6 +72,8 @@ async def active_mode():
             if has_command:
                 logger.info(f"[Active]: Processing next command")
                 email = await loop.run_in_executor(None, gmail_client.get_next_command)
+                # process command
+                
                 await loop.run_in_executor(None, gmail_client.reply_message, email, "Processed command", "MEEP Command")
                 last_activity = time.time()
             if has_chat:

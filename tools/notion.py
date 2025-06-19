@@ -6,6 +6,7 @@ from logger import PrettyFormatter
 from notion_client import AsyncClient
 import asyncio
 import traceback
+import re
 
 # helper class for keeping track and safety checking information about the databases
 class Databases:
@@ -29,7 +30,7 @@ class Databases:
                 # get the property names and values from the json dictionary data
                 for prop_name, prop_value in json_data["properties"].items():
                     # only add the property fields we care about
-                    if prop_name in self.lookup[name]["required"] or prop_name in self.lookup[name]["optional"].keys():
+                    if prop_name in self.lookup[name]["required"] or prop_name in self.lookup[name]["optional"]:
                         properties[prop_name.lower()] = {"name": prop_name, "id": prop_value["id"], "type": prop_value["type"]}
                         if prop_value["type"] in ["select", "status", "multi_select"]:
                             properties[prop_name.lower()]["options"] = {option["name"].lower(): option["name"] for option in prop_value[prop_value["type"]]["options"]}
@@ -39,10 +40,12 @@ class Databases:
         else:
             self.logger.error("[!] Not a database object")
     
+    def list_databases(self):
+        return self.databases.keys()
+    
     # Check if arguments are valid for database (arguments = {lowercase string : value})
     #   return -> code, message (where 0 = failure and 1 = success)
     def is_valid_page(self, database : str, arguments : dict):
-        database = database.lower()
         # check: database is a valid entry
         if database not in self.databases.keys():
             self.logger.error(f"[!] {database} is not a valid database endpoint")
@@ -75,21 +78,33 @@ class Databases:
             prop_type = self.databases[database]["properties"][arg.lower()]["type"]
             # assigning property value based on property type
             if prop_type == "number":
-                if type(value) == int or type(value) == float:
-                    prop_value = value
-                else:
-                    return 0, f"{arg} is type {type(value)} and not integer or float"
+                try:
+                    prop_value = float(value)
+                except:
+                    return 0, f"{prop_name} should be type integer or float!"
             elif prop_type in ["title", "rich_text"]:
                 if type(value) == str:
                     prop_value = [{"type": "text", "text": {"content": value}}]
                 else:
-                    return 0, f"{arg} is type {type(value)} and not string"
+                    return 0, f"{prop_name} is type string and not: {type(value).__name__}!"
             elif prop_type in ["select", "status"]:
                 value = value.lower()
                 if value in self.databases[database]["properties"][arg.lower()]["options"].keys():
                     prop_value = {"name": self.databases[database]["properties"][arg.lower()]["options"][value]}
                 else:
-                    return 0, f"{arg} is not a valid option"
+                    return 0, f"{arg} is not a valid option in {prop_name}!"
+            elif prop_type == "date":
+                if type(value) == str and re.match(r"\d\d\/\d\d\/\d\d\d\d(-\d\d\/\d\d\/\d\d\d\d)?", value):
+                    if "-" in value:
+                        startdate, enddate = value.split("-")
+                        start_m, start_d, start_y = startdate.split("/")
+                        end_m, end_d, end_y = enddate.split("/")
+                        prop_value = {"start": f"{start_y}-{start_m}-{start_d}", "end": f"{end_y}-{end_m}-{end_d}"}
+                    else:
+                        m, d, y = value.split("/")
+                        prop_value = {"start": f"{y}-{m}-{d}"}
+                else:
+                    return 0, f"{value} is not the right format"
             else:
                 return 0, f"Invalid property type: {prop_type}"
             page["properties"][prop_name] = {
@@ -180,25 +195,35 @@ class Notion:
         self.databases = databases
         self.logger.info(f"[✓] List of databases: \n{self.databases}")
 
+    def list_databases(self):
+        return self.databases.list_databases()
+
+    # RETURNS: code (0 = Failure, 1 = Success), message (To respond to the test)
+    # properties 
     async def add_page_to_database(self, database, properties : dict):
         # lower all keys in input
         properties = {k.lower(): v for k, v in properties.items()}
+        database = database.lower()
         code, msg = self.databases.is_valid_page(database, properties)
         if code == 1: # success
             client = await self.get_client()
             if client:
                 response = await client.pages.create(**msg) # type: ignore
+                if not response: # creation failed
+                    self.logger.error(f"[!] Adding page to {database} failed")
+                    return 0, f"Creating page in {database} failed"
+                return 1, f"Page with title {response['properties']['Name']['title'][0]['plain_text']} added to {database}"
             else:
-                self.logger.error(f"[!] Adding page to {database} failed")
-                return 0, f"Adding page to {database} failed"
+                self.logger.error(f"[!] No client found when creting page in {database}")
+                return 0, f"No client found when creting page in {database}"
         return code, msg
 
 
 
 async def main():
     obj = await Notion.create()
-    props = {"nAMe":"testing1", "seLect":"option1", "status":"Done"}
-    print(await obj.add_page_to_database("testing", props))
+    props = {"nAMe":"testing finance", "amount":-100, "iTem Date": "06/02/2025"}
+    print(await obj.add_page_to_database("finances", props))
 
 
 if __name__ == "__main__":

@@ -11,6 +11,9 @@ notion_bot*.log
 #   intended to run in multiple environments; otherwise, check them in:
 # .python-version
 
+# vscode settings
+.vscode
+
 # Environment
 .venv
 
@@ -19,6 +22,7 @@ credentials.json
 gmail_token.json
 notion_api.json
 notion_config.json
+command_config.json
 
 # DS_Store
 .DS_Store
