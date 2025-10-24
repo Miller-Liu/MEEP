@@ -186,7 +186,7 @@ class Gmail:
 					else:
 						# Get content of email
 						content = self.parse_plaintext(msg_data['payload'])
-						print(content)
+						
 						email_obj = {
 							"content": content,
 							"time_sent": time_sent,

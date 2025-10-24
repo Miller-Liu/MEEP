@@ -2,6 +2,7 @@ import os
 import time
 import random
 import asyncio
+import logging
 import aiosqlite
 from fuzzywuzzy import process
 from typing import Literal, Optional
@@ -19,13 +20,14 @@ def exception_handler(exception_type, exception, traceback):
     print(exception)
 
 class Processor:
-    def __init__(self, chunk_size) -> None:
-        self.chat_started = False
+    def __init__(self, logger : logging.Logger) -> None:
+        self.chat_started : bool = False
         self._notion : Notion
+        self.logger : logging.Logger = logger
     
     @classmethod
-    async def create(cls) -> 'Processor':
-        processor_obj = cls(chunk_size=10)
+    async def create(cls, logger : logging.Logger) -> 'Processor':
+        processor_obj = cls(logger)
         
         ok = await processor_obj.init_db()
         if not ok:
@@ -124,8 +126,8 @@ class Processor:
             except aiosqlite.OperationalError as e:
                 if "locked" in str(e).lower():
                     await asyncio.sleep(delay)
-            except Exception as e:
-                print(e)
+            except Exception:
+                self.logger.exception(f"[Processor] ")
                 pass
         return None
     
@@ -182,14 +184,6 @@ class Processor:
             )
         await self._inbox.commit()
 
-    async def fetch_inbox(self, chunk_size):
-        cursor = await self.execute("inbox", "SELECT * FROM emails")
-        if not cursor:
-            return
-        emails = await cursor.fetchmany(chunk_size)
-        for email in emails:
-            print(dict(email))
-
     async def classify_emails(self, chunk_size) -> None:
         cursor = await self.execute("inbox", "SELECT * FROM emails WHERE type = 'unconfirmed'")
         if not cursor:
@@ -199,14 +193,15 @@ class Processor:
 
         for email in emails:
             message = email["content"]
+            print(message)
             if len(message) <= 1:
-                await self.execute("inbox", "DELETE FROM emails WHERE msg_id = ?", (email["msg_id"]))
+                await self.execute("inbox", "DELETE FROM emails WHERE msg_id = ?", (email["msg_id"],))
                 continue
-            message = message.split("\n")
+            first_line = message.split("\n")[0]
             
             # Chatbot mode
             chat_commands = ['hey meep', 'bye meep']
-            matched_command = process.extractOne(message[0], chat_commands)
+            matched_command = process.extractOne(first_line, chat_commands)
             if matched_command and matched_command[1] >= 80:
                 if not self.chat_started and matched_command[0] == 'hey meep':
                     self.chat_started = True
@@ -221,11 +216,11 @@ class Processor:
                 continue
             
             # Command
-            if message[0] == "!":
+            if first_line[0] == "!":
                 await self.execute("inbox", "UPDATE emails SET type = ? WHERE msg_id = ?", ("Command", email["msg_id"]))
                 continue
             
-            await self.execute("inbox", "DELETE FROM emails WHERE msg_id = ?", (email["msg_id"]))
+            await self.execute("inbox", "DELETE FROM emails WHERE msg_id = ?", (email["msg_id"],))
             continue
         
         await self._inbox.commit()
@@ -259,73 +254,38 @@ class Processor:
     async def process_loop(self, stop_event : asyncio.Event, chunk_size):
         state = "INACTIVE"
         last_activity = time.time()
-        print("Processor starting in INACTIVE mode.")
+        self.logger.info("[Processor] Processor starting in INACTIVE mode.")
 
-        while not stop_event.is_set():
-            # Check for work
-            cursor = await self.execute(
-                "inbox", 
-                "SELECT COUNT(*) as cnt FROM emails WHERE type IN ('unconfirmed', 'Command')"
-            )
-            if not cursor:
-                continue
-            count = (await cursor.fetchone())["cnt"] # type: ignore
+        try:
+            while not stop_event.is_set():
+                # Check for work
+                cursor = await self.execute(
+                    "inbox", 
+                    "SELECT COUNT(*) as cnt FROM emails WHERE type IN ('unconfirmed', 'Command')"
+                )
+                if not cursor:
+                    continue
+                count = (await cursor.fetchone())["cnt"] # type: ignore
 
-            # INACTIVE MODE
-            if count == 0:
-                # No new work for over one minute -> INACTIVE
-                if state != "INACTIVE" and time.time() - last_activity > 1 * 60:
-                    print("Switching to INACTIVE mode.")
-                    state = "INACTIVE"
-                await asyncio.sleep(5)
-                continue
+                # INACTIVE MODE
+                if count == 0:
+                    # No new work for over one minute -> INACTIVE
+                    if state != "INACTIVE" and time.time() - last_activity > 1 * 60:
+                        self.logger.info("[Processor] Switching to INACTIVE mode.")
+                        state = "INACTIVE"
+                    await asyncio.sleep(5)
+                    continue
 
-            # There is work → ACTIVE
-            if count > 0 and state != "ACTIVE":
-                print("Switching to ACTIVE mode.")
-                state = "ACTIVE"
+                # There is work → ACTIVE
+                if count > 0 and state != "ACTIVE":
+                    self.logger.info("[Processor] Switching to ACTIVE mode.")
+                    state = "ACTIVE"
 
-            await self.classify_emails(chunk_size)
-            await self.run_commands(chunk_size)
-            last_activity = time.time()
+                await self.classify_emails(chunk_size)
+                # await self.run_commands(chunk_size)
+                last_activity = time.time()
 
-            # Small delay to prevent tight loop
-            await asyncio.sleep(0.5)
-
-        print("Processor loop exiting cleanly.")
-
-async def main():
-    # sys.excepthook = exception_handler
-
-    obj = await Processor.create()
-
-    sample_email = {
-        "content": "!TESTING",
-        "time_sent": "2025-10-21T20:00:00Z",
-        "time_seen": "2025-10-21T20:00:00Z",
-        "sender": "test@example.com",
-        "subject": "Test email",
-        "msg_id": "12345",
-        "thread_id": "thread-1",
-        "gmail_msg_id": "gmail-12345"
-    }
-    sample_email2 = {
-        "content": "TESTING",
-        "time_sent": "2025-10-21T20:00:00Z",
-        "time_seen": "2025-10-21T20:00:00Z",
-        "sender": "test@example.com",
-        "subject": "Test email",
-        "msg_id": "123456",
-        "thread_id": "thread-1",
-        "gmail_msg_id": "gmail-123456"
-    }
-
-    # await obj.add_emails_to_inbox([sample_email, sample_email2])
-
-    await obj.classify_emails(5)
-
-    await obj.terminate()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+                # Small delay to prevent tight loop
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            self.logger.exception(f"[Gmail] Unexpected error: {e}")

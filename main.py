@@ -83,10 +83,12 @@ async def main():
     gmail_client = Gmail(logger)
 
     # 
-    processor = await Processor.create()
+    processor = await Processor.create(logger)
 
+    gmail_task = asyncio.create_task(gmail_fetch_loop(stop_event))
+    processor_task = asyncio.create_task(processor.process_loop(stop_event, 10))
     try:
-        await gmail_fetch_loop(stop_event)
+        await asyncio.gather(gmail_task, processor_task)
     except asyncio.CancelledError:
         stop_event.set()
         logger.info("[Main] Gmail loop cancelled — cleaning up.")

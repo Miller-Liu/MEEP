@@ -1,6 +1,7 @@
 
 DateTime==5.5
 fuzzywuzzy==0.18.0
+python-Levenshtein==0.27.1
 
 # Async libraries
 aiosqlite==0.21.0
