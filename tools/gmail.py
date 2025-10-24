@@ -1,20 +1,18 @@
+import re
+import base64
 import os.path
-
 import logging
-from logging.handlers import RotatingFileHandler
+import datetime
 from email.message import EmailMessage
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from email.utils import parsedate_to_datetime
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-import base64
-import re
-import heapq
-import copy
-from queue import PriorityQueue
-from typing import Callable
+from logging.handlers import RotatingFileHandler
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
 
+# my files
 from tools.logger import PrettyFormatter
 
 # If modifying these scopes, delete the file gmail_token.json.
@@ -33,41 +31,15 @@ Gmail:
 - email_queue: the emails that we have yet to process
 '''
 class Gmail:
-	def __init__(self):
-		root_dir = os.path.join(os.getcwd(), "logs")
-		log_path = os.path.join(root_dir, "gmail_bot.log")
+	def __init__(self, logger):
+		log_path = os.path.join(os.getcwd(), "logs", "gmail_bot.log")
 
 		# Configure logger
-		self.logger = logging.getLogger("MEEP Gmail Bot")
-		self.logger.setLevel(logging.INFO)
-
-		# Configure writing to log files
-		handler = RotatingFileHandler(
-			log_path,     			# path to log file
-			maxBytes=5_000_000,     # 5 MB max file size
-			backupCount=3           # Keep 3 old versions (log.1, log.2, log.3)
-		)
-
-		# Configure formatter for writing to log files
-		formatter = PrettyFormatter(datefmt='%Y-%m-%d %I:%M:%S %p')	# date log format
-		handler.setFormatter(formatter)
-		self.logger.addHandler(handler)
-		self.logger.info("---------- Initialized logger object, script is running :) ----------")
-
-		# Configure credentials
-		self.logger.info("[✓] Gmail credentials configured successfully")
+		self.logger = logger
 
 		# Configure username (email) and valid inboxes
 		self.email = self.get_email()
 		self.logger.info("[✓] Registered user email: " + str(self.email))
-		self.inboxes = self.get_inboxes()
-		self.logger.info("[✓] Registered email inboxes: " + str(self.inboxes))
-
-		self.last_chat = (0, None)
-
-		# Configure the command queue
-		self.command_queue = PriorityQueue()
-		self.process_inbox_emails("MEEP Seen")
 
 	def get_service(self):
 		"""
@@ -82,7 +54,6 @@ class Gmail:
 		if os.path.exists(token_path):
 			try:
 				creds = Credentials.from_authorized_user_file(token_path, SCOPES)
-				self.logger.info("[✓] Loaded gmail_token.json")
 			except Exception as e:
 				creds = None
 				self.logger.error(f"[!] Failed to parse gmail_token.json: {e}")
@@ -96,7 +67,7 @@ class Gmail:
 					self.logger.info("[↻] Refreshed expired token.")
 				except Exception as e:
 					creds = None
-					self.logger.error(f"[!] Failed to refresh token: {e}")
+					self.logger.error(f"[!] Failed to refresh gmail_token.json: {e}")
 			else:
 				# We have to recreate creds, trigger manual login flow
 				flow = InstalledAppFlow.from_client_secrets_file(
@@ -110,42 +81,21 @@ class Gmail:
 				with open(token_path, "w") as token:
 					token.write(creds.to_json())
 				self.logger.info("[✓] Saved new gmail_token.json")
-		try:
-			return build("gmail", "v1", credentials=creds)
-		except HttpError as error:
-			self.logger.error(f"[!] An error occurred setting up service: {error}")
+				
+		if creds:
+			try:
+				return build("gmail", "v1", credentials=creds) 
+			except HttpError as error:
+				self.logger.error(f"[!] An error occurred setting up service: {error}")
 		self.logger.error(f"[!] Gmail service object is NOT set up")
 		return None
 
 	def get_email(self):
 		service = self.get_service()
 		if service:
-			# Get the profile info
+			# Get profile info
 			profile = service.users().getProfile(userId='me').execute()
 			return profile['emailAddress']
-		self.logger.error("[!] No service object")
-		return None
-
-	def get_inboxes(self):
-		service = self.get_service()
-		if service:
-			results = service.users().labels().list(userId="me").execute()
-			labels = results.get("labels", [])
-
-			if not labels:
-				self.logger.error("[!] No inbox labels found.")
-				return {}
-			
-			# We only care about: UNREAD, MEEP Seen, MEEP Ignored, MEEP Chat and MEEP Command (maybe INBOX, SENT, and IMPORTANT)
-			inboxes = {}
-			required_inboxes = ["UNREAD", "MEEP Seen", "MEEP Ignored", "MEEP Chat", "MEEP Command"]
-			for label in labels:
-				if label["name"] in required_inboxes:
-					inboxes[label["name"]] = label['id']
-			for label in required_inboxes:
-				if label not in inboxes.keys():
-					self.logger.error("[!] Missing some inboxes in: " + str(required_inboxes))
-			return inboxes
 		self.logger.error("[!] No service object")
 		return None
 
@@ -173,48 +123,45 @@ class Gmail:
 			self.logger.info(f"[✓] Sent email with id: {send_message['id']}")
 		else:
 			self.logger.error("[!] No service object")
-	
-	def reply_message(self, email, content: str, label: str):
-		service = self.get_service()
-		if service and self.inboxes:
-			message = EmailMessage()
-			message.set_content(content)
-			message["To"] = email["sender"]
-			message['Subject'] = "Re: " + email["subject"]
-			message['In-Reply-To'] = email["msg_id"]
-			message['References'] = email["msg_id"]
 
-			# encoded message
-			encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-			create_message = {"raw": encoded_message, "threadId": email["thread_id"]}
-			send_message = service.users().messages().send(userId="me", body=create_message).execute()
-			self.logger.info(f"[✓] Replied to email with id: {send_message['id']}")
-
-			# Relabel email from MEEP Seen to specified inbox (label)
-			service.users().messages().modify(
-				userId='me',
-				id=email['gmail_msg_id'],
-				body={
-					"addLabelIds": self.inboxes[label],
-					"removeLabelIds": self.inboxes["MEEP Seen"]
-				}
-			).execute()
-			self.logger.info(f"[✓] Relabeled to email with with id: {send_message['id']}")
-
-			self.logger.info(f"[✓] {self.command_queue.qsize()} emails in the queue")
+	def parse_plaintext(self, payload):
+		content = ""
+		if 'parts' in payload:
+			# multipart message
+			for part in payload['parts']:
+				mime_type = part.get('mimeType')
+				# we only need the plaintext content
+				if mime_type == 'text/plain':
+					data = part.get('body', {}).get('data')
+					decoded_bytes = base64.urlsafe_b64decode(data.encode('UTF-8'))
+					body = decoded_bytes.decode('utf-8')
+					
+					status = 0
+					# We are using google voice so the content is sandwiched between elements linked to voice.google.com
+					for chunk in body.split("\n"):
+						if re.search("<https:\/\/voice\.google\.com.*>", chunk) or re.search("To respond to this text message, reply to this email or visit Google Voice.", chunk): # type: ignore
+							status += 1
+							if status >= 2:
+								break
+						else:
+							content += chunk.strip("\r") + "\n"
+			if content:
+				return content.strip("\n")
+			else:
+				self.logger.error("[!] Missing content in message payload")
 		else:
-			self.logger.error("[!] No service object")
+			self.logger.error("[!] Missing parts in message payload")
+		return ""
 
-	def process_inbox_emails(self, inbox, is_command : Callable = lambda _: False) -> None:
+	def get_unread_emails(self, chunk_size) -> list:
+		emails = []
 		service = self.get_service()
-		# service obj exists, and inbox is a valid inbox
-		if service and self.inboxes and inbox in self.inboxes.keys() and inbox in ["UNREAD", "MEEP Seen"]:
-			results = service.users().messages().list(userId='me', labelIds=[self.inboxes[inbox]]).execute()
+		if service:
+			results = service.users().messages().list(userId='me', labelIds=["UNREAD"], maxResults=chunk_size).execute()
 			messages = results.get('messages', [])
 
 			if not messages:
-				self.logger.info(f"[✓] No messages in {inbox}")
+				self.logger.info(f"[✓] No unread messages")
 			else:
 				self.logger.info(f"[✓] Got {len(messages)} message(s)")
 				for msg in messages:
@@ -222,11 +169,13 @@ class Gmail:
 					gmail_msg_id = msg['id']
 					msg_data = service.users().messages().get(userId='me', id=gmail_msg_id, format='full').execute()
 					headers = msg_data['payload']['headers']
-					label_ids = msg_data.get('labelIds', [])
 					subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
 					sender = next((h['value'] for h in headers if h['name'] == 'From'), None)
 					msg_id = next((h['value'] for h in headers if h['name'] == 'Message-ID'), None)
-					timestamp_ms = int(msg_data['internalDate'])
+					time_sent = next((h['value'] for h in headers if h['name'] == 'Date'), None)
+					if time_sent:
+						time_sent = parsedate_to_datetime(time_sent).strftime("%Y-%m-%d %I:%M:%S %p")
+					time_seen = datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
 					thread_id = msg_data['threadId']
 					
 					if not (sender and msg_id): # If there is no sending or no message id
@@ -235,133 +184,68 @@ class Gmail:
 						self.logger.warning("[!] Sender is MEEP, skipping this email")
 						# TODO: maybe add a thing relabeling this email to ignored
 					else:
-						# Get body of email
-						payload = msg_data['payload']
-						content = ""
-						status = 0
-						if 'parts' in payload:
-							# multipart message
-							for part in payload['parts']:
-								mime_type = part.get('mimeType')
-								# we only need the plaintext content
-								if mime_type == 'text/plain':
-									data = part.get('body', {}).get('data')
-									decoded_bytes = base64.urlsafe_b64decode(data.encode('UTF-8'))
-									body = decoded_bytes.decode('utf-8')
-									
-									# We are using google voice so the content is sandwiched between elements linked to voice.google.com
-									for chunk in body.split("\n"):
-										if re.search("<https:\/\/voice\.google\.com.*>", chunk) or re.search("To respond to this text message, reply to this email or visit Google Voice.", chunk): # type: ignore
-											status += 1
-											if status >= 2:
-												break
-										else:
-											content += chunk.strip("\r") + "\n"
-							if content:
-								content = content.strip("\n")
-								email_obj = {
-									"headers": headers,
-									"subject": subject,
-									"label_ids": label_ids,
-									"sender": sender,
-									"msg_id": msg_id,
-									"thread_id": thread_id,
-									"content": content,
-									"gmail_msg_id": gmail_msg_id
+						# Get content of email
+						content = self.parse_plaintext(msg_data['payload'])
+						print(content)
+						email_obj = {
+							"content": content,
+							"time_sent": time_sent,
+							"time_seen": time_seen,
+							"type": "unconfirmed",
+							"sender": sender,
+							"subject": subject,
+							"msg_id": msg_id,
+							"thread_id": thread_id,
+							"gmail_msg_id": gmail_msg_id
+						}
+						
+						emails.append(email_obj)
+						
+						try:
+							service.users().messages().modify(
+								userId="me",
+								id=gmail_msg_id,
+								body={
+									"removeLabelIds": ["UNREAD"]
 								}
-
-								# If reading from unread, relabel to seen
-								if inbox == "UNREAD":
-									# potentially add try except here?
-									service.users().messages().modify(
-										userId='me',
-										id=gmail_msg_id,
-										body={
-											"addLabelIds": self.inboxes["MEEP Seen"],
-											"removeLabelIds": self.inboxes["UNREAD"]
-										}
-									).execute()
-									
-								if is_command(content):
-									# message is a command, add to queue and relabel
-									self.command_queue.put((timestamp_ms, email_obj))
-									self.logger.info(f"[✓] The email from \"{content}\" is added to the queue")
-								else:
-									# message is a chat message, replace the last message
-									if timestamp_ms >= self.last_chat[0]:
-										if self.last_chat[1]:
-											service.users().messages().modify(
-												userId='me',
-												id=self.last_chat[1]["gmail_msg_id"],
-												body={
-													"addLabelIds": self.inboxes["MEEP Ignored"],
-													"removeLabelIds": self.last_chat[1]["label_ids"]
-												}
-											).execute()
-											self.logger.info(f"[✓] Ignored email about \"{self.last_chat[1]['content']}\"")
-										self.last_chat = (timestamp_ms, email_obj)
-										self.logger.info(f"[✓] The email about \"{content}\" is the current email")
-									else:
-										service.users().messages().modify(
-											userId='me',
-											id=gmail_msg_id,
-											body={
-												"addLabelIds": self.inboxes["MEEP Ignored"],
-												"removeLabelIds": label_ids
-											}
-										).execute()
-										self.logger.info(f"[✓] Ignored email about \"{content}\"")
-							else:
-								self.logger.error("[!] Missing content in message payload")
-						else:
-							self.logger.error("[!] Missing parts in message payload")
-				self.logger.info(f"[✓] {self.command_queue.qsize()} emails in the queue")
+							).execute()
+							self.logger.info(f"[✓] Email with msg_id {msg_id} is relabeled")
+						except:
+							self.logger.error("[!] Failed to relabel email")
 		else:
 			self.logger.error("[!] Missing service or the specified inbox does not exist")
 
-	# check if specified inbox is empty
-	def check_inbox(self, inbox) -> bool:
+		return emails
+
+	# check if there are any unread emails
+	def check_inbox(self) -> bool:
 		service = self.get_service()
-		# service obj exists and inbox is valid
-		if service and self.inboxes and inbox in self.inboxes.keys():
-			results = service.users().messages().list(userId='me', labelIds=[self.inboxes[inbox]]).execute()
+		# service obj exists
+		if service:
+			results = service.users().messages().list(userId='me', labelIds=["UNREAD"]).execute()
 			messages = results.get('messages', [])
 			if not messages:
 				return False
 			else:
 				return True
-		self.logger.error("[!] No valid inbox found")
+		self.logger.error("[!] Missing service")
 		return False
 
-	def check_command_queue(self):
-		return self.command_queue.qsize() != 0
-
-	def print_command_queue(self) -> None:
-		temp = copy.deepcopy(self.command_queue.queue)
-		ordered = [heapq.heappop(temp)[1] for _ in range(len(temp))]
-		return_str = ""
-		for item in ordered:
-			return_str += f"Content: {item['content']}\n\n"
-		print(return_str)
-
-	def get_next_command(self):
-		if self.check_command_queue:
-			return self.command_queue.get()[1]
-		return None
-	
-	def check_chat(self):
-		return self.last_chat[1] != None
-	
-	def get_next_chat(self):
-		next_chat = self.last_chat[1]
-		self.last_chat = (self.last_chat[0], None)
-		return next_chat
-
 if __name__ == "__main__":
-	obj = Gmail()
-	# obj.process_inbox_emails("UNREAD")
-	# obj.print_command_queue()
-	# print(obj.get_next_chat()[1]["content"]) # type: ignore
-	# obj.reply_message(obj.get_next_email(), "MEEP: testing if relabel works")
-	# obj.print_email_queue()
-	
+	# Configure logger
+	logger = logging.getLogger("Testing MEEP Bot")
+	logger.setLevel(logging.INFO)
+	log_path = os.path.join(os.getcwd(), "logs", "test.log")
+
+	handler = RotatingFileHandler(
+		log_path,     			# path to log file
+		maxBytes=5_000_000,     # 5 MB max file size
+	)
+
+	# Configure formatter for writing to log files
+	formatter = PrettyFormatter(datefmt='%Y-%m-%d %I:%M:%S %p')	# date log format
+	handler.setFormatter(formatter)
+	logger.addHandler(handler)
+
+	obj = Gmail(logger)
+	obj.get_unread_emails(5)

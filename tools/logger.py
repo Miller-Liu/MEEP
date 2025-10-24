@@ -1,5 +1,6 @@
 import logging
 import datetime
+import traceback
 
 class PrettyFormatter(logging.Formatter):
     def __init__(self, fmt = None, datefmt = None, style = "%", validate = True, *, defaults = None):
@@ -22,5 +23,10 @@ class PrettyFormatter(logging.Formatter):
 
         # log content
         f_message = record.msg
+
+        # exception traceback if needed
+        if record.exc_info:
+            f_message += "\n" + ''.join(traceback.format_exception(*record.exc_info))
+
 
         return f"[{f_time}] [{f_level_name}] [{f_source}]: {f_message}"

@@ -1,15 +1,10 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 
-# Logs:
-gmail_bot*.log
-MEEP_bot*.log
-notion_bot*.log
-
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
 #   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+.python-version
 
 # vscode settings
 .vscode
@@ -17,12 +12,16 @@ notion_bot*.log
 # Environment
 .venv
 
-# Confidential files
+# Confidential credential files
 credentials.json
 gmail_token.json
-notion_api.json
 notion_config.json
-command_config.json
+
+# Confidential memory and logfiles
+inbox.*
+outbox.*
+MEEP.log
+test.log
 
 # DS_Store
 .DS_Store

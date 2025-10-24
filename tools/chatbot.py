@@ -1,9 +1,11 @@
-import logging
-import asyncio
 import os
 import json
-from notion import Notion
+import logging
+import asyncio
 from datetime import datetime
+
+# my files
+from tools.notion import Notion
 
 # notion finances ""
 class ChatBot:
@@ -31,7 +33,24 @@ class ChatBot:
             if default == "!today":
                 return datetime.today().strftime('%m/%d/%Y')
         return default
+    
+    def is_command(self, input) -> bool:
+        command = input.strip().split(" ")
+        command_type, command_area = command[:2]
+        command_type = command_type.lower()
+        command_area = command_area.lower()
+        ref = self.command_reference
 
+        # check command type
+        if command_type not in ref.keys():
+            return False
+        ref = ref[command_type]
+        
+        # check command area + set up function
+        if command_area not in ref.keys():
+            return False
+        return True
+    
     # return code, message
     async def command(self, input: str):
         command = input.strip().split(" ")
@@ -86,9 +105,9 @@ class ChatBot:
             if i < len(command_args):
                 arguments[args[i]] = command_args[i]
             # if the user did not, but there is a default, set that
-            elif i < len(defaults) and defaults[i]:
+            elif i < len(defaults) and defaults[i] != None:
                 arguments[args[i]] = self.translate_default(defaults[i])
-            # first time that there is no default and no user argument, break
+            # first time that there is no default and no user argument
             else:
                 break
         
@@ -97,7 +116,7 @@ class ChatBot:
 
 async def main():
     obj = await ChatBot.create()
-    code, msg = await obj.command(r'notion FinAncEs "Gambling addiction" -3 06/17/2025')
+    code, msg = await obj.command(r'notion movies "materialists" 9 "Such a good movie')
     print(msg)
 
 
