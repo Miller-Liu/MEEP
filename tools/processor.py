@@ -135,6 +135,22 @@ class Processor:
     # Application Logic
     # ----------------------------
 
+    async def get_outgoing_emails(self, chunk_size):
+        cursor = await self.execute("outbox", "SELECT * FROM emails LIMIT ?", (chunk_size,))
+        if not cursor:
+            return []
+        return await cursor.fetchall()
+
+    async def remove_from_outbox(self, emails):
+        for email_obj in emails:
+            await self.execute(
+                "outbox", 
+                "DELETE FROM emails WHERE msg_id = ?", 
+                (email_obj["msg_id"],)
+            )
+            self.logger.info(f"[Processor] Deleted \"{email_obj['content']}\" from outbox")
+        await self._outbox.commit()
+
     async def add_emails_to_inbox(self, emails):
         for email_obj in emails:
             await self.execute(
@@ -186,11 +202,11 @@ class Processor:
         await self._outbox.commit()
 
     async def classify_emails(self, chunk_size) -> None:
-        cursor = await self.execute("inbox", "SELECT * FROM emails WHERE type = 'unconfirmed'")
+        cursor = await self.execute("inbox", "SELECT * FROM emails WHERE type = 'unconfirmed' LIMIT ?", (chunk_size,))
         if not cursor:
             return
 
-        emails = await cursor.fetchmany(chunk_size)
+        emails = await cursor.fetchall()
 
         for email in emails:
             message = email["content"]
@@ -232,11 +248,11 @@ class Processor:
         await self._inbox.commit()
 
     async def run_commands(self, chunk_size) -> None:
-        cursor = await self.execute("inbox", "SELECT * FROM emails WHERE type = 'Command'")
+        cursor = await self.execute("inbox", "SELECT * FROM emails WHERE type = 'Command' LIMIT ?", (chunk_size,))
         if not cursor:
             return
 
-        emails = await cursor.fetchmany(chunk_size)
+        emails = await cursor.fetchall()
         reply_drafts = []
         for email in emails:
             message = email["content"].split("\n")

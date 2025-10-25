@@ -123,7 +123,26 @@ class Gmail:
 			self.logger.info(f"[Gmail] Sent email: {content}")
 		else:
 			self.logger.error("[Gmail] No service object")
+			
+	def reply_message(self, email):
+		service = self.get_service()
+		if service:
+			message = EmailMessage()
+			message.set_content(email["content"])
+			message["To"] = email["sender"]
+			message['Subject'] = "Re: " + email["subject"]
+			message['In-Reply-To'] = email["msg_id"]
+			message['References'] = email["msg_id"]
 
+			# encoded message
+			encoded_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+
+			create_message = {"raw": encoded_message, "threadId": email["thread_id"]}
+			send_message = service.users().messages().send(userId="me", body=create_message).execute()
+			self.logger.info(f"[Gmail] Sent email: {email['content']}")
+		else:
+			self.logger.error("[Gmail] No service object")
+	
 	def parse_plaintext(self, payload):
 		content = ""
 		if 'parts' in payload:

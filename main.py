@@ -57,6 +57,49 @@ async def gmail_fetch_loop(stop_event: asyncio.Event):
     except Exception as e:
         logger.exception(f"[Gmail Fetch Loop] Unexpected error: {e}")
 
+async def gmail_send_loop(stop_event: asyncio.Event):
+    """
+    Continuously checks Gmail for new messages.
+    Switches between IDLE and ACTIVE modes automatically.
+    - IDLE mode: Checks less frequently.
+    - ACTIVE mode: Fetches new emails and adds them to the sql database.
+    """
+
+    loop = asyncio.get_running_loop()
+    state = "IDLE"
+    last_activity = time.time()
+
+    logger.info("[Gmail Fetch Loop] Initialized gmail fetch loop.")
+
+    try:
+        while not stop_event.is_set():
+            emails = await processor.get_outgoing_emails(10)
+
+            # INACTIVE MODE
+            if not emails:
+                # No new work for over one minute -> INACTIVE
+                if state != "INACTIVE" and time.time() - last_activity > 1 * 60:
+                    logger.info("[Gmail Send Loop] No outgoing messages for a while — switching to INACTIVE mode.")
+                    state = "INACTIVE"
+                await asyncio.sleep(5)
+                continue
+
+            # There is work → ACTIVE
+            if emails and state != "ACTIVE":
+                logger.info("[Gmail Send Loop] New outgoing messages detected — switching to ACTIVE mode.")
+                state = "ACTIVE"
+            
+            # Do work here
+            for email_obj in emails:
+                await loop.run_in_executor(None, gmail_client.reply_message, email_obj)
+            await processor.remove_from_outbox(emails)
+            last_activity = time.time()
+
+            # Small delay to prevent tight loop
+            await asyncio.sleep(0.5)
+    except Exception as e:
+        logger.exception(f"[Gmail Fetch Loop] Unexpected error: {e}")
+
 async def main():
     # set up necessary variables
     global chatbot, logger, gmail_client, processor
@@ -85,10 +128,11 @@ async def main():
     # 
     processor = await Processor.create(logger)
 
-    gmail_task = asyncio.create_task(gmail_fetch_loop(stop_event))
+    gmail_fetch_task = asyncio.create_task(gmail_fetch_loop(stop_event))
+    gmail_send_task = asyncio.create_task(gmail_send_loop(stop_event))
     processor_task = asyncio.create_task(processor.process_loop(stop_event, 10))
     try:
-        await asyncio.gather(gmail_task, processor_task)
+        await asyncio.gather(gmail_fetch_task, gmail_send_task, processor_task)
     except asyncio.CancelledError:
         stop_event.set()
         logger.info("[Main] Gmail loop cancelled — cleaning up.")
