@@ -26,7 +26,7 @@ async def gmail_fetch_loop(stop_event: asyncio.Event):
     state = "IDLE"
     last_activity = time.time()
 
-    logger.info("[Gmail] Initialized gmail fetch loop.")
+    logger.info("[Gmail Fetch Loop] Initialized gmail fetch loop.")
 
     try:
         while not stop_event.is_set():
@@ -37,14 +37,14 @@ async def gmail_fetch_loop(stop_event: asyncio.Event):
             if not has_new:
                 # No new work for over one minute -> INACTIVE
                 if state != "INACTIVE" and time.time() - last_activity > 1 * 60:
-                    logger.info("[Gmail] No new messages for a while — switching to INACTIVE mode.")
+                    logger.info("[Gmail Fetch Loop] No new messages for a while — switching to INACTIVE mode.")
                     state = "INACTIVE"
                 await asyncio.sleep(5)
                 continue
 
             # There is work → ACTIVE
             if has_new and state != "ACTIVE":
-                logger.info("[Gmail] New messages detected — switching to ACTIVE mode.")
+                logger.info("[Gmail Fetch Loop] New messages detected — switching to ACTIVE mode.")
                 state = "ACTIVE"
             
             # Do work here
@@ -55,7 +55,7 @@ async def gmail_fetch_loop(stop_event: asyncio.Event):
             # Small delay to prevent tight loop
             await asyncio.sleep(0.5)
     except Exception as e:
-        logger.exception(f"[Gmail] Unexpected error: {e}")
+        logger.exception(f"[Gmail Fetch Loop] Unexpected error: {e}")
 
 async def main():
     # set up necessary variables

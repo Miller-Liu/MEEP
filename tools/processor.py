@@ -165,7 +165,7 @@ class Processor:
                 """
                 INSERT OR REPLACE INTO emails
                 (content, time_sent, sender, subject, msg_id, thread_id, gmail_msg_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, 
                 (
                     message,
@@ -183,6 +183,7 @@ class Processor:
                 (email_obj["msg_id"],)
             )
         await self._inbox.commit()
+        await self._outbox.commit()
 
     async def classify_emails(self, chunk_size) -> None:
         cursor = await self.execute("inbox", "SELECT * FROM emails WHERE type = 'unconfirmed'")
@@ -193,7 +194,7 @@ class Processor:
 
         for email in emails:
             message = email["content"]
-            print(message)
+            
             if len(message) <= 1:
                 await self.execute("inbox", "DELETE FROM emails WHERE msg_id = ?", (email["msg_id"],))
                 continue
@@ -206,21 +207,26 @@ class Processor:
                 if not self.chat_started and matched_command[0] == 'hey meep':
                     self.chat_started = True
                     await self.execute("inbox", "UPDATE emails SET type = ? WHERE msg_id = ?", ("Chat", email["msg_id"]))
+                    self.logger.info(f"[Processor] Chat mode started")
                     continue
                 if self.chat_started and matched_command[0] == 'bye meep':
                     self.chat_started = False
                     await self.execute("inbox", "UPDATE emails SET type = ? WHERE msg_id = ?", ("Chat", email["msg_id"]))
+                    self.logger.info(f"[Processor] Chat mode ended")
                     continue
             if self.chat_started:
                 await self.execute("inbox", "UPDATE emails SET type = ? WHERE msg_id = ?", ("Chat", email["msg_id"]))
+                self.logger.info(f"[Processor] Message \"{email['content']}\" labeled as chat")
                 continue
             
             # Command
             if first_line[0] == "!":
                 await self.execute("inbox", "UPDATE emails SET type = ? WHERE msg_id = ?", ("Command", email["msg_id"]))
+                self.logger.info(f"[Processor] Message \"{email['content']}\" labeled as command")
                 continue
             
             await self.execute("inbox", "DELETE FROM emails WHERE msg_id = ?", (email["msg_id"],))
+            self.logger.info(f"[Processor] Message \"{email['content']}\" ignored")
             continue
         
         await self._inbox.commit()
@@ -234,17 +240,19 @@ class Processor:
         reply_drafts = []
         for email in emails:
             message = email["content"].split("\n")
+            command = message[0][1:]
             command_types = ["notion"]
             return_message = ""
 
-            matched_command = process.extractOne(message[0], command_types)
-            if not matched_command or matched_command[1] <= 80:
-                continue
-            
             # Match kind of command
-            match matched_command[0]:
-                case "notion":
-                    return_message = await self._notion.run_command("".join(matched_command[1:]))
+            matched_command = process.extractOne(command, command_types)
+            if not matched_command or matched_command[1] < 80:
+                return_message = f"Invalid command {command}"
+            else:
+                # Route to correct command executer
+                match matched_command[0]:
+                    case "notion":
+                        return_message = await self._notion.run_command("".join(message[1:]))
             
             if return_message:
                 reply_drafts.append((return_message, email))
@@ -254,7 +262,7 @@ class Processor:
     async def process_loop(self, stop_event : asyncio.Event, chunk_size):
         state = "INACTIVE"
         last_activity = time.time()
-        self.logger.info("[Processor] Processor starting in INACTIVE mode.")
+        self.logger.info("[Processor Loop] Initialized processor loop")
 
         try:
             while not stop_event.is_set():
@@ -271,21 +279,21 @@ class Processor:
                 if count == 0:
                     # No new work for over one minute -> INACTIVE
                     if state != "INACTIVE" and time.time() - last_activity > 1 * 60:
-                        self.logger.info("[Processor] Switching to INACTIVE mode.")
+                        self.logger.info("[Processor Loop] Switching to INACTIVE mode.")
                         state = "INACTIVE"
                     await asyncio.sleep(5)
                     continue
 
                 # There is work → ACTIVE
                 if count > 0 and state != "ACTIVE":
-                    self.logger.info("[Processor] Switching to ACTIVE mode.")
+                    self.logger.info("[Processor Loop] Switching to ACTIVE mode.")
                     state = "ACTIVE"
 
                 await self.classify_emails(chunk_size)
-                # await self.run_commands(chunk_size)
+                await self.run_commands(chunk_size)
                 last_activity = time.time()
 
                 # Small delay to prevent tight loop
                 await asyncio.sleep(0.5)
         except Exception as e:
-            self.logger.exception(f"[Gmail] Unexpected error: {e}")
+            self.logger.exception(f"[Processor Loop] Unexpected error: {e}")

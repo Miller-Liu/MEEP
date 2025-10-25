@@ -39,7 +39,7 @@ class Gmail:
 
 		# Configure username (email) and valid inboxes
 		self.email = self.get_email()
-		self.logger.info("[✓] Registered user email: " + str(self.email))
+		self.logger.info("[Gmail] Registered user email: " + str(self.email))
 
 	def get_service(self):
 		"""
@@ -56,7 +56,7 @@ class Gmail:
 				creds = Credentials.from_authorized_user_file(token_path, SCOPES)
 			except Exception as e:
 				creds = None
-				self.logger.error(f"[!] Failed to parse gmail_token.json: {e}")
+				self.logger.error(f"[Gmail] Failed to parse gmail_token.json: {e}")
 
 		# If there are no (valid) credentials available
 		if not creds or not creds.valid:
@@ -64,30 +64,30 @@ class Gmail:
 				# If the credentials is valid but expired, try to refresh the credentials.
 				try:
 					creds.refresh(Request())
-					self.logger.info("[↻] Refreshed expired token.")
+					self.logger.info("[Gmail] Refreshed expired token.")
 				except Exception as e:
 					creds = None
-					self.logger.error(f"[!] Failed to refresh gmail_token.json: {e}")
+					self.logger.error(f"[Gmail] Failed to refresh gmail_token.json: {e}")
 			else:
 				# We have to recreate creds, trigger manual login flow
 				flow = InstalledAppFlow.from_client_secrets_file(
 					credential_path, SCOPES
 				)
 				creds = flow.run_local_server(port=0)
-				self.logger.info("[✓] Login successful.")
+				self.logger.info("[Gmail] Login successful.")
 
 			# Save and return our credentials
 			if creds:
 				with open(token_path, "w") as token:
 					token.write(creds.to_json())
-				self.logger.info("[✓] Saved new gmail_token.json")
+				self.logger.info("[Gmail] Saved new gmail_token.json")
 				
 		if creds:
 			try:
 				return build("gmail", "v1", credentials=creds) 
 			except HttpError as error:
-				self.logger.error(f"[!] An error occurred setting up service: {error}")
-		self.logger.error(f"[!] Gmail service object is NOT set up")
+				self.logger.error(f"[Gmail] An error occurred setting up service: {error}")
+		self.logger.error(f"[Gmail] Gmail service object is NOT set up")
 		return None
 
 	def get_email(self):
@@ -96,7 +96,7 @@ class Gmail:
 			# Get profile info
 			profile = service.users().getProfile(userId='me').execute()
 			return profile['emailAddress']
-		self.logger.error("[!] No service object")
+		self.logger.error("[Gmail] No service object")
 		return None
 
 	# send email with specified content and subject
@@ -120,9 +120,9 @@ class Gmail:
 
 			create_message = {"raw": encoded_message}
 			send_message = service.users().messages().send(userId="me", body=create_message).execute()
-			self.logger.info(f"[✓] Sent email with id: {send_message['id']}")
+			self.logger.info(f"[Gmail] Sent email: {content}")
 		else:
-			self.logger.error("[!] No service object")
+			self.logger.error("[Gmail] No service object")
 
 	def parse_plaintext(self, payload):
 		content = ""
@@ -148,9 +148,9 @@ class Gmail:
 			if content:
 				return content.strip("\n")
 			else:
-				self.logger.error("[!] Missing content in message payload")
+				self.logger.error("[Gmail] Missing content in message payload")
 		else:
-			self.logger.error("[!] Missing parts in message payload")
+			self.logger.error("[Gmail] Missing parts in message payload")
 		return ""
 
 	def get_unread_emails(self, chunk_size) -> list:
@@ -160,10 +160,8 @@ class Gmail:
 			results = service.users().messages().list(userId='me', labelIds=["UNREAD"], maxResults=chunk_size).execute()
 			messages = results.get('messages', [])
 
-			if not messages:
-				self.logger.info(f"[✓] No unread messages")
-			else:
-				self.logger.info(f"[✓] Got {len(messages)} message(s)")
+			if messages:
+				self.logger.info(f"[Gmail] Got {len(messages)} new message(s)")
 				for msg in messages:
 					# For each unread email, get the relevant fields
 					gmail_msg_id = msg['id']
@@ -179,9 +177,9 @@ class Gmail:
 					thread_id = msg_data['threadId']
 					
 					if not (sender and msg_id): # If there is no sending or no message id
-						self.logger.error("[!] Missing sender or Message-ID")
+						self.logger.error("[Gmail] Missing sender or Message-ID")
 					elif self.email and re.search(self.email, sender): # If this is a reply from MEEP
-						self.logger.warning("[!] Sender is MEEP, skipping this email")
+						self.logger.warning("[Gmail] Sender is MEEP, skipping this email")
 						# TODO: maybe add a thing relabeling this email to ignored
 					else:
 						# Get content of email
@@ -209,11 +207,10 @@ class Gmail:
 									"removeLabelIds": ["UNREAD"]
 								}
 							).execute()
-							self.logger.info(f"[✓] Email with msg_id {msg_id} is relabeled")
 						except:
-							self.logger.error("[!] Failed to relabel email")
+							self.logger.error(f"[Gmail] Failed to relabel email {content}")
 		else:
-			self.logger.error("[!] Missing service or the specified inbox does not exist")
+			self.logger.error("[Gmail] Missing service or the specified inbox does not exist")
 
 		return emails
 
@@ -228,7 +225,7 @@ class Gmail:
 				return False
 			else:
 				return True
-		self.logger.error("[!] Missing service")
+		self.logger.error("[Gmail] Missing service")
 		return False
 
 if __name__ == "__main__":

@@ -444,7 +444,7 @@ class Notion:
                 case "add":
                     return command + "\n" + await endpoint.add_page(payload["arguments"])
 
-        return ""
+        return f"{command} did not match any Notion command."
 
     def __bool__(self) -> bool:
         '''Returns true if Notion object is set up according to the config file'''
