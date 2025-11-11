@@ -268,7 +268,7 @@ class Processor:
                 # Route to correct command executer
                 match matched_command[0]:
                     case "notion":
-                        return_message = await self._notion.run_command("".join(message[1:]))
+                        return_message = await self._notion.run_command("\n".join(message[1:]))
             
             if return_message:
                 reply_drafts.append((return_message, email))

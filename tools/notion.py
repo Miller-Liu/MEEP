@@ -1,8 +1,12 @@
 import os
+import re
 import sys
 import json
 import asyncio
 import aiohttp
+import dateparser
+from datetime import datetime, timezone
+from typing import Any
 from types import SimpleNamespace
 from fuzzywuzzy import process
 
@@ -40,15 +44,11 @@ class NotionClient:
 
     async def get(self, url : str):
         resp = await self._client.get(url)
-
-        if resp.status == 200:
-            return json.loads(await resp.text())
+        return json.loads(await resp.text())
     
     async def post(self, url : str, data = None):
         resp = await self._client.post(url, json=data)
-
-        if resp.status == 200:
-            return json.loads(await resp.text())
+        return json.loads(await resp.text())
 
     async def close(self):
         await self._client.close()
@@ -73,10 +73,17 @@ class Datasource:
         try:
             self._id = configs["id"]
             for _, props in configs["commands"].items():
+                # has to have required arguments
                 for req_prop_name in props["required"]:
                     self._properties[req_prop_name] = {}
-                for _, opt_prop_name in props["optional"].items():
-                    self._properties[opt_prop_name] = {}
+                
+                # may or may not have default and optional properties 
+                if "default" in props:
+                    for def_prop_name, _ in props["default"].items():
+                        self._properties[def_prop_name] = {}
+                if "optional" in props:
+                    for _, opt_prop_name in props["optional"].items():
+                        self._properties[opt_prop_name] = {}
         except:
             raise NotionException(f"Invalid commands configuration for datasource: [{name}]")
 
@@ -101,7 +108,7 @@ class Datasource:
                     "type": prop_value["type"]
                 }
                 match prop_value["type"]:
-                    case "title":
+                    case "title" | "number" | "date":
                         pass
                     case "select":
                         curr_property["options"] = {}
@@ -140,43 +147,93 @@ class Datasource:
             prop_id = self._properties[arg]["id"]
             prop_type = self._properties[arg]["type"]
 
-            prop = self.format_property(arg, value)
-            if not prop:
-                return "Properties are incorrectly formatted."
+            code, payload = self.format_property(arg, value)
+            if not code:
+                return payload
 
             page["properties"][arg] = {
                 "id": prop_id,
                 "type": prop_type,
-                prop_type: prop, 
+                prop_type: payload, 
             }
         
         response = await self._client.pages.create(page)
         if not response: # creation failed
+            print(response)
             return "Error: Creating page encountered unexpected error."
         if response["object"] == "error":
             return "Error: " + response["message"]
 
         return "Success"
 
-    def format_property(self, prop_name, prop_value):
-        '''Returns formatted property, returns null equivalent value if property value is invalid'''
+    def format_property(self, prop_name, prop_value) -> tuple[int, Any]:
+        '''Returns formatted property, returns error message if property value is invalid'''
         match self._properties[prop_name]["type"]:
             # note that inputs for properties are divided by \n most likely so no multiline inputs
             case "title" | "rich_text":
-                return [{
+                return 1, [{
                     "type": "text", 
                     "text": {
                         "content": prop_value
                     },
                     "plain_text": prop_value
                 }]
+            
+            case "number": 
+                try:
+                    return 1, float(prop_value)
+                except:
+                    return 0, f"Error: [{prop_value}] is an invalid input for [{prop_name}]."
+            
+            case "date":
+                text = prop_value.strip().lower()
+
+                # --- Detect and split date ranges ---
+                range_match = re.split(r"\s+(?:to|-|until|through)\s+", text)
+                if len(range_match) > 2:
+                    return 0, "Error: Too many inputs"
+
+                # --- start date ---
+                start_date = dateparser.parse(range_match[0])
+                if not start_date:
+                    return 0, f"Error: Failed to parse given date [{start_date}]."
+                
+                # If the text is relative like 'today', 'tomorrow', 'yesterday'
+                if range_match[0] in ["today", "tomorrow", "yesterday"]:
+                    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+                # If no explicit time — return just the date part
+                if start_date.time() == datetime.min.time():
+                    start_date = start_date.date().isoformat()
+                else:
+                    start_date = start_date.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                
+                if len(range_match) == 1:
+                    return 1, {"start": start_date}
+                
+                # --- end date ---
+                end_date = dateparser.parse(range_match[1])
+                if not end_date:
+                    return 0, f"Error: Failed to parse given date [{end_date}]."
+                
+                # If the text is relative like 'today', 'tomorrow', 'yesterday'
+                if range_match[1] in ["today", "tomorrow", "yesterday"]:
+                    end_date = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+
+                # If no explicit time — return just the date part
+                if end_date.time() == datetime.min.time():
+                    end_date = end_date.date().isoformat()
+                else:
+                    end_date = end_date.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                
+                return 1, {"start": start_date, "end": end_date}
 
             case "select":
                 matched_option = process.extractOne(prop_value, self._properties[prop_name]["options"].keys())
-                if matched_option[1] < 80: # type: ignore
+                if not matched_option or matched_option[1] < 80:
                     print("Invalid option", prop_value)
-                    return {}
-                return { "name": matched_option[0] } # type: ignore
+                    return 0, {}
+                return 1, {"name": matched_option[0]}
             
             case "multi_select":
                 prop = []
@@ -184,9 +241,12 @@ class Datasource:
                     matched_option = process.extractOne(value, self._properties[prop_name]["options"])
                     if matched_option[1] < 80: # type: ignore
                         print("Invalid option", value)
-                        return {}
+                        return 0, {}
                     prop.append({ "name": matched_option[0] }) # type: ignore
-                return prop
+                return 1, prop
+            
+            case _:
+                return 0, f"Error: property [{prop_name}] is incorrectly formatted."
 
     def property_help(self, indent : int) -> str:
         '''Help function printing out information about valid property inputs'''
@@ -340,6 +400,10 @@ class Notion:
                             # required arguments
                             for r_arg in args["required"]:
                                 help_string += f" [{r_arg}]"
+
+                            # default arguments
+                            for flag, d_arg in args["defaul"].items():
+                                help_string += f" [{flag} {d_arg}]"
                             
                             # optional arguments
                             for flag, o_arg in args["optional"].items():
@@ -390,28 +454,33 @@ class Notion:
         
         # Check for valid endpoint
         endpoint = process.extractOne(command_parts[0], [*self._datasources.keys(), *self._blocks.keys()])
-        if endpoint[1] < 85: # type: ignore
+        if not endpoint or endpoint[1] < 85:
             return (0, f"[{command_parts[0]}] is an invalid Notion command endpoint.")
         endpoint_type = ""
+        endpoint = endpoint[0]
         if endpoint in self._datasources:
             endpoint_type = "datasources"
         elif endpoint in self._blocks:
             endpoint_type = "blocks"
+        if not endpoint_type:
+            return (0, f"[{endpoint}] is not in valid.")
         
         # Check for valid action
-        action = process.extractOne(command_parts[1], self.command_config[endpoint_type][endpoint].key())
-        if action[1] < 85: # type: ignore
+        action = process.extractOne(command_parts[1], self.command_config[endpoint_type][endpoint].keys())
+        if not action or action[1] < 85:
             return (0, f"[{command_parts[1]}] is an invalid action for [{endpoint}].")
+        action = action[0]
         
         # Check for valid arguments
         req_argument_count, opt_argument_count = 0, 0
         required_args = self.command_config[endpoint_type][endpoint][action]["required"]
+        default_args = self.command_config[endpoint_type][endpoint][action]["default"]
         optional_args = self.command_config[endpoint_type][endpoint][action]["optional"]
         command_arguments = {}
         for argument in command_parts[2:]:
             # Check type of input
             if argument[0] == "-":
-                flag = argument.split(" ")[0]
+                flag = argument.split(" ")[0].lower()
                 if flag not in optional_args:
                     return (0, f"[{flag}] is an invalid flag for [{endpoint}, {action}].")
                 if flag in command_arguments:
@@ -426,6 +495,11 @@ class Notion:
                     return (0, f"Provided too many arguments for [{endpoint}, {action}].")
         if req_argument_count != len(self.command_config[endpoint_type][endpoint][action]["required"]):
             return (0, f"Provided the wrong number of arguments for [{endpoint}, {action}].")
+        
+        # Fill default arguments
+        for arg_name, value in default_args.items():
+            if arg_name not in command_arguments:
+                command_arguments[arg_name] = value
             
         return (1, {"type": endpoint_type, "endpoint": endpoint, "action": action, "arguments": command_arguments})
     
@@ -437,12 +511,12 @@ class Notion:
             return f"Error: {payload}"
 
         if payload["type"] == "datasources":
-            endpoint = self._datasources[payload["endpoint"]]
+            endpoint : Datasource = self._datasources[payload["endpoint"]]
 
             # Route to corresponding actions
             match payload["action"]:
                 case "add":
-                    return command + "\n" + await endpoint.add_page(payload["arguments"])
+                    return "Command: " + command.replace("\n", " ") + "\n" + await endpoint.add_page(payload["arguments"])
 
         return f"{command} did not match any Notion command."
 
@@ -451,18 +525,13 @@ class Notion:
         return bool(self._api_key) and (bool(self._blocks) or bool(self._datasources))
 
 async def main():
-    sys.excepthook = exception_handler
-    
     obj = await Notion.create()
     if not obj:
         return
     
     # print(obj.help("syntax teseoirhwt"))
-
-    # await obj.run_command("To-Dos\nadd\nTESTING\n-t afx")
-    # await obj.run_command("testing\nadd\nTESTING\n-t afx")
-    # await obj.run_command("To-Dos\nadd\nTESTING\nwoahhowiehri\n-t afx")
-    # await obj.run_command("To-Dos\nadd\nTESTING\ntesingionwer")
+    # print(obj.parse_command("Finances\nadd\nMatcha\n8.23"))
+    print(await obj.run_command("Finances\nadd\nMatcha\n8.23\n-d November 11th 2pm"))
     await obj.terminate()
 
 if __name__ == "__main__":
